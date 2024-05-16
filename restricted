@@ -1,0 +1,79 @@
+import json
+import logging
+import gc
+from pdf2image import convert_from_path
+import pytesseract
+from PIL import Image, ImageFilter, ImageEnhance
+import fitz  # PyMuPDF
+import os
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+def preprocess_image(image):
+    # Convert image to grayscale
+    image = image.convert('L')
+    # Enhance the image contrast
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(2)
+    # Apply a median filter to remove possible noise
+    image = image.filter(ImageFilter.MedianFilter())
+    # Binarize the image using a threshold
+    threshold = 130
+    image = image.point(lambda p: p > threshold and 255)
+    return image
+def pdf_to_images(pdf_path, dpi=300, first_page=1, last_page=5):
+    logging.info(f'Converting PDF to images: {pdf_path}, DPI: {dpi}, Pages: {first_page}-{last_page}')
+    doc = fitz.open(pdf_path)
+    images = []
+    for page_num in range(first_page - 1, last_page):
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap(matrix=fitz.Matrix(dpi/72, dpi/72))
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+    doc.close()
+    logging.info(f'Converted {len(images)} pages to images')
+    return images
+def images_to_text(images, first_page):
+    logging.info('Extracting text from images')
+    text_data = []
+    config = '--oem 1 --psm 6 -l ara'  # Optimized configuration for Arabic
+    for i, image in enumerate(images):
+        logging.info(f'Processing page {first_page + i}')
+        preprocessed_image = preprocess_image(image)
+        text = pytesseract.image_to_string(preprocessed_image, config=config)
+        text_data.append({'page': first_page + i, 'text': text})
+        logging.info(f'Extracted text from page {first_page + i}')
+    logging.info('Text extraction complete')
+    return text_data
+def process_pdf_in_chunks(pdf_path, chunk_size=5):
+    logging.info(f'Processing PDF in chunks: {pdf_path}, Chunk size: {chunk_size}')
+    # Get the number of pages in the PDF
+    doc = fitz.open(pdf_path)
+    num_pages = doc.page_count
+    logging.info(f'Number of pages in PDF: {num_pages}')
+    all_text_data = []
+    for start_page in range(1, num_pages + 1, chunk_size):
+        end_page = min(start_page + chunk_size - 1, num_pages)
+        logging.info(f'Processing pages {start_page} to {end_page}')
+        images = pdf_to_images(pdf_path, 300, start_page, end_page)  # Use lower DPI to save memory
+        text_data = images_to_text(images, start_page)
+        all_text_data.extend(text_data)
+        # Clear memory
+        del images
+        gc.collect()
+        logging.info(f'Processed chunk {start_page} to {end_page} and cleared memory')
+    doc.close()
+    return all_text_data
+def main(pdf_path):
+    logging.info('Starting main process')
+    text_data = process_pdf_in_chunks(pdf_path, chunk_size=5)
+    json_output = json.dumps(text_data, indent=4, ensure_ascii=False)
+    logging.info('Main process complete')
+    return json_output
+# Path to your PDF file
+pdf_path = '/content/6.pdf'
+json_result = main(pdf_path)
+# Save the result to a file
+output_path = 'إضاءة الحالك من ألفاظ دليل السالك إلى موطأ الإمام مالك.json'
+with open(output_path, 'w', encoding='utf-8') as json_file:
+    json_file.write(json_result)
+logging.info(f"JSON file created at: {output_path}")
